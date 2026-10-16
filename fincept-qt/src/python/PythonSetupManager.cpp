@@ -560,6 +560,7 @@ struct PythonSetupManager::StepOptions {
     bool capture_stdout = false; // keep raw stdout (uv --version, uv pip freeze)
     bool background = false;     // below-normal priority (never on the launch-critical path)
     bool local8bit = false;      // non-uv tools print in the local code page
+    QString working_dir;         // run the step here (empty = inherit the app's cwd)
 };
 
 struct PythonSetupManager::StepResult {
@@ -1076,6 +1077,8 @@ QProcess* PythonSetupManager::start_step(const QString& program, const QStringLi
     proc->setProcessEnvironment(opts.env);
     proc->setProgram(program);
     proc->setArguments(args);
+    if (!opts.working_dir.isEmpty())
+        proc->setWorkingDirectory(opts.working_dir);
 #ifdef Q_OS_WIN
     const bool low_priority = opts.background;
     proc->setCreateProcessArgumentsModifier([low_priority](QProcess::CreateProcessArguments* cpa) {
@@ -2142,6 +2145,11 @@ void PythonSetupManager::lane_install_core(int lane) {
     StepOptions opts;
     opts.env = uv_environment();
     opts.timeout_ms = kPsmInstallTimeoutMs;
+    // uv 0.7.12 splits the -c/--constraint value at spaces, so the absolute lock
+    // path under "~/Library/Application Support" fails with
+    // "File not found: .../Application" on every macOS install. Run from the venv
+    // directory and pass the lock by its bare file name instead.
+    opts.working_dir = install_dir() + QLatin1Char('/') + L.venv;
     // No --compile-bytecode here: this is the launch-critical path. The full pass
     // compiles the whole site-packages (core included) in the background.
     const QStringList args = {QStringLiteral("pip"),
@@ -2151,7 +2159,7 @@ void PythonSetupManager::lane_install_core(int lane) {
                               QStringLiteral("-r"),
                               find_requirements_file(L.core_file),
                               QStringLiteral("-c"),
-                              lock_path(L.venv),
+                              QFileInfo(lock_path(L.venv)).fileName(),
                               QStringLiteral("-v")};
     start_step(
         uv_path(), args, opts,
